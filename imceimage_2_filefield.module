@@ -41,7 +41,7 @@ function imceimage_2_filefield_menu() {
   $items = array();
   
   $items['admin/settings/imceimage_2_filefield'] = array(
-    'title' => 'Migrate imceimage cck fields',
+    'title' => 'Migrate imceimage CCK Fields to filefield',
     'page callback' => 'drupal_get_form',
     'page arguments' => array('imceimage_2_filefield'),
     'access arguments' => array('administer imceimage_2_filefield'),
@@ -150,7 +150,7 @@ function imceimage_2_filefield() {
   $form['performance']['n_nodes'] = array(
     '#type' => 'textfield',
     '#title' => t('Nodes to update per batch'),
-    '#default_value' => 16,
+    '#default_value' => 10,
     '#required' => true,
     '#disabled' => $disabled,
   );
@@ -209,10 +209,10 @@ function imceimage_2_filefield_submit($form = null, &$form_state = null) {
       $operations[] = array('imceimage_2_filefield_batch_save', array($field_name, $type_names));
       $operations[] = array('imceimage_2_filefield_batch_delete', array($n_fields, $field_name, $type_names));
       $operations[] = array('imceimage_2_filefield_batch_create', array($field_name, $field_type, $field_widgets[$field_name], $type_names, $path, $path_fieldname));
-      $operations[] = array('imceimage_2_filefield_batch_migrate', array($n_nodes, $field_name, $type_names, $path, $path_fieldname));
     }
+    $operations[] = array('imceimage_2_filefield_batch_migrate', array($n_nodes, $sources, $path, $path_fieldname));
     $batch = array(
-      'title' => t('Migrate'),
+      'title' => t('Migrate imceimage CCK Fields to filefield'),
       'operations' => $operations,
       'finished' => 'imceimage_2_filefield_finish',
       'init_message' => t('Batch is starting.'),
@@ -358,76 +358,83 @@ function imceimage_2_filefield_batch_create($field_name, $field_type, $field_wid
   menu_rebuild();
 
   variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
+  $context['results'][] = $context['message'] = t('Created @field_name, added to content types: @types.', array('@types' => implode(', ', $type_names), '@field_name' => $field_name));
 }
 
 /**
  * migrates saved data to new filefield  
  */
-function imceimage_2_filefield_batch_migrate($n, $field_name, $type_names, $path, $path_fieldname, &$context) {
+function imceimage_2_filefield_batch_migrate($n, $sources, $path, $path_fieldname, &$context) {
   $batch = variable_get("imceimage_2_filefield_batch_{$_GET['id']}", false);
   if (empty($batch) || $batch['halt']) return;
   
-  if (!isset($context['sandbox']['i'])) $context['sandbox']['i'] = 0;
-  $i = $context['sandbox']['i'];
+  $type_names = array();
+  foreach ($sources as $field => $types) foreach ($types as $type) $type_names[$type] = $type;
+  $query = "FROM {node} WHERE type IN ('" . implode("', '", $type_names) . "')";
+  
   if (!isset($context['sandbox']['N'])) {
-    $N = db_result(db_query("SELECT COUNT(*) FROM {node} WHERE type IN ('" . implode("', '", $type_names) . "')"));
+    $N = db_result(db_query("SELECT COUNT(*) $query"));
     if (!$N) return;
     $context['sandbox']['N'] = $N;
   }
   $N = $context['sandbox']['N'];
   
-  $result = db_query_range("SELECT nid FROM {node} WHERE type IN ('" . implode("', '", $type_names) . "') ORDER BY nid", array(), $i, $n);
-  while ($r = db_fetch_object($result)) {
+  if (!isset($context['sandbox']['i'])) $context['sandbox']['i'] = 0;
+  $i = $context['sandbox']['i'];
    
-    $vids = imceimage_2_filefield_get_revisions($r->nid, $field_name);
+  $result = db_query_range("SELECT nid $query ORDER BY nid", array(), $i, $n);
+  while ($r = db_fetch_object($result)) {
+    $vids = imceimage_2_filefield_get_revisions($r->nid);
     foreach ($vids as $vid) {
       $node = node_load($r->nid, $vid);
-
-      foreach (imceimage_2_filefield_get_items($r->nid, $vid, $field_name) as $item) {
-      
-        // @see http://drupal.org/node/330421
-        // @see http://drupal.org/node/201594
-
-        // the source imceimage
-        $src = urldecode($item['imceimage_path']);
-        if (empty($src)) continue;
-        // imceimage stores initial '/'
-        $src = substr($src, 1);
-        
-        // the destination 
-        $dest = file_directory_path() . $path;
-        if ($path_fieldname) {
-          $dest .= $field_name;
-          if (!file_check_directory($dest, true)) {
-            $context['results'][] = $context['error_message'] = t('error checking directory @file_path.', array('@file_path' => $dest));
-            $batch['halt'] = $context['finished'] = 1;
-            variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
-            return;
+      foreach ($sources as $field_name => $type_names) {
+        if (in_array($node->type, $type_names)) {
+          foreach (imceimage_2_filefield_get_items($r->nid, $vid, $field_name) as $item) {
+          
+            // @see http://drupal.org/node/330421
+            // @see http://drupal.org/node/201594
+    
+            // the source imceimage
+            $src = urldecode($item['imceimage_path']);
+            if (empty($src)) continue;
+            // imceimage stores initial '/'
+            $src = substr($src, 1);
+            
+            // the destination 
+            $dest = file_directory_path() . $path;
+            if ($path_fieldname) {
+              $dest .= $field_name;
+              if (!file_check_directory($dest, true)) {
+                $context['results'][] = $context['error_message'] = t('error checking directory @file_path.', array('@file_path' => $dest));
+                $batch['halt'] = $context['finished'] = 1;
+                variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
+                return;
+              }
+            }
+            $dest .=  '/' . basename($src);
+            
+            if (!$file = imceimage_2_filefield_get_file($src, $dest, $node->uid)) {
+               $context['results'][] = t('error importing file @src to @dest.', array('@src' => $src, '@dest' => $dest));
+            } else {
+              // create filefield field
+              $node->{$field_name}[$item['delta']] = array(
+                'fid' => $file->fid,
+                'title' => basename($file->filename),
+                'filename' => $file->filename,
+                'filepath' => $file->filepath,
+                'filesize' => $file->filesize,
+                'mimetype' => $file->filemime,
+                'description' => basename($file->filename),
+                'data' => array(
+                  'alt' => $item['imceimage_alt'],
+                  'title' => '',
+                ),
+                'list' => 1,
+              );
+            }
           }
         }
-        $dest .=  '/' . basename($src);
-        
-        if (!$file = imceimage_2_filefield_get_file($src, $dest, $node->uid)) {
-           $context['results'][] = t('error importing file @src to @dest.', array('@src' => $src, '@dest' => $dest));
-        } else {
-          // create filefield field
-          $node->{$field_name}[$item['delta']] = array(
-            'fid' => $file->fid,
-            'title' => basename($file->filename),
-            'filename' => $file->filename,
-            'filepath' => $file->filepath,
-            'filesize' => $file->filesize,
-            'mimetype' => $file->filemime,
-            'description' => basename($file->filename),
-            'data' => array(
-              'alt' => $item['imceimage_alt'],
-              'title' => '',
-            ),
-            'list' => 1,
-          );
-        }
       }
-
       node_save($node);
     }
     $i++;
@@ -437,7 +444,7 @@ function imceimage_2_filefield_batch_migrate($n, $field_name, $type_names, $path
   if ($context['sandbox']['i'] == $i || $context['finished'] > 1) $context['finished'] = 1;
   $context['sandbox']['i'] = $i;
   
-  $context['results'][] = $context['message'] = t('Migrating field @field_name.', array('@field_name' => $field_name));
+  $context['results'][] = $context['message'] = t('Migrating data @i out of @N.', array('@i' => $i+1, '@N' => $N));
 }
 
 /**
@@ -473,8 +480,8 @@ function imceimage_2_filefield_finish($success, $results, $operations) {
  * @param integer $nid
  * @param string $field_name
  */
-function imceimage_2_filefield_get_revisions($nid, $field_name) {
-  $query = "SELECT DISTINCT vid FROM {imceimage_2_filefield} WHERE nid = %d AND field_name = '%s'";
+function imceimage_2_filefield_get_revisions($nid) {
+  $query = "SELECT DISTINCT vid FROM {imceimage_2_filefield} WHERE nid = %d";
   $param = array($nid, $field_name);
   $result = db_query($query, $param);
   $vids = array();
