@@ -495,7 +495,7 @@ function imceimage_2_filefield_get_revisions($nid) {
 function imceimage_2_filefield_get_items($nid, $vid, $field_name) {
   $query = "SELECT * FROM {imceimage_2_filefield} WHERE nid = %d AND vid = %d AND field_name = '%s' AND status = 0";
   $param = array($nid, $vid, $field_name);
-  $result = db_query_range($query, $param, 0, 1);
+  $result = db_query($query, $param);
   $items = array();
   while ($r = db_fetch_array($result)) {
     $r['status'] = 1;
