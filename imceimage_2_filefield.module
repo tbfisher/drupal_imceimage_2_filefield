@@ -1,0 +1,530 @@
+<?php
+// $Id$
+
+/* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+// hooks
+
+/**
+ * Implementation of hook_init().
+ */
+function imceimage_2_filefield_init() {
+  module_load_include('module', 'content');
+}
+
+/**
+ * implementation of hook_help()
+ */
+function imceimage_2_filefield_help($path = null, $arg = null) {
+  $output = '';
+  switch ($path) {
+    case "admin/help#imceimage_2_filefield":
+      $output = '<p>'.  t("Migrates imceimage cck fields to filefield cck fields.") .'</p>';
+      break;
+  }
+  return $output;
+}
+
+/**
+ * implementation of hook_perm()
+ */
+function imceimage_2_filefield_perm() {
+  return array(
+    'administer imceimage_2_filefield', 
+  );
+}
+
+/**
+ * Implementation of hook_menu().
+ */
+function imceimage_2_filefield_menu() {
+
+  $items = array();
+  
+  $items['admin/settings/imceimage_2_filefield'] = array(
+    'title' => 'Migrate imceimage cck fields',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('imceimage_2_filefield'),
+    'access arguments' => array('administer imceimage_2_filefield'),
+    #'type' => MENU_LOCAL_TASK,
+  );
+
+  return $items;
+}
+
+/* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+// batch
+
+/**
+ * the batch initiate form
+ */
+function imceimage_2_filefield() {
+  $form = array();
+  
+  $fields = array();
+  foreach (content_fields() as $field) {
+    if ($field['type'] == 'imceimage') $fields[] = $field;
+  }
+  $disabled = count($fields) ? 0 : 1;
+  
+  $form['description'] = $disabled ? 
+    array(
+      '#value' => '
+          <p>No imceimage cck fields found.</p>
+        ',
+    )
+    :
+    array(
+      '#value' => '
+          <p>Migrates imceimage cck fields to filefield cck fields. All referenced files will be copied to the drupal files directory, in the subdirectory specified below.</p>
+          <p>You should prevent any content editing while this process is running.</p>
+          <p>You should NOT trust this module will migrate your data perfectly. If it fails you must restore your site from a backup. Test on a copy! Make backups!</p>
+        ',
+    );
+  
+  $form['path'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Path'),
+    '#collapsible' => true,
+    '#collapsed' => false,
+  );
+  
+  $form['path']['destination'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Path'),
+    '#description' => t('Drupal files sub-directory to use as the destination for copied files.'),
+    '#required' => true,
+    '#default_value' => 'filefield_images',
+    '#disabled' => $disabled,
+  );
+  
+  $form['path']['path_fieldname'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Create a sudirectory under the above path for each field.'),
+    '#disabled' => $disabled,
+    '#default_value' => 1,
+  );
+  
+  $widgets = array();
+  foreach (array('imagefield', 'filefield') as $module) {
+    if ($items = module_invoke($module, 'widget_info')) {
+      foreach ($items as $id => $widget) {
+        $widgets[$id] = $widget['label'];
+      }
+    }
+  }
+  $form['fields'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Fields'),
+    '#collapsible' => true,
+    '#collapsed' => true,
+  );
+  foreach ($fields as $field) {
+    $form['fields'][] = array(
+      "import-{$field['field_name']}" => array(
+        '#type' => 'checkbox',
+        '#title' => $field['field_name'],
+        '#default_value' => 1,
+      ),
+      "widget-{$field['field_name']}" => array(
+        '#type' => 'select',
+        '#options' => $widgets,
+      ),
+    );
+  }
+
+  $form['performance'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Performance'),
+    '#collapsible' => true,
+    '#collapsed' => true,
+  );
+  
+  $form['performance']['n_fields'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Fields to delete per batch'),
+    '#default_value' => 2,
+    '#required' => true,
+    '#disabled' => $disabled,
+  );
+
+  $form['performance']['n_nodes'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Nodes to update per batch'),
+    '#default_value' => 16,
+    '#required' => true,
+    '#disabled' => $disabled,
+  );
+
+  $form['buttons']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('go'),
+    '#disabled' => $disabled,
+  );
+
+  $form['#pre_render'][] = 'vertical_tabs_form_pre_render';
+  return $form;
+}
+
+function imceimage_2_filefield_validate($form = null, &$form_state = null) {
+  if ($form_state['values']['n_fields'] < 1) 
+    form_set_error('n_fields', t('Fields per batch must be greater than 0.'));
+  if ($form_state['values']['n_nodes'] < 1) 
+    form_set_error('n_nodes', t('Fields per batch must be greater than 0.'));
+  $path = $form_state['values']['destination'];
+  $path = preg_replace(array('/^\/*/', '/\/*$/'), array('/', '/'), $path);
+  $path = file_directory_path() . $path;
+  if (!file_check_directory($path, 1, 'path'))
+    form_set_error('destination', t('@path could not be written to.', array('@path' => $path)));
+}
+
+function imceimage_2_filefield_submit($form = null, &$form_state = null) {
+
+  $n_fields = (int) $form_state['values']['n_fields'];
+  $n_nodes = (int) $form_state['values']['n_nodes'];
+  $path = $form_state['values']['destination'];
+  $path = preg_replace(array('/^\/*/', '/\/*$/'), array('/', '/'), $path);
+  $path_fieldname = !empty($form_state['values']['path_fieldname']);
+  
+  $field_type = 'filefield';
+    
+  $field_widgets = array();
+  // array keyed on field names, of array of content types containing the field
+  $sources = array();
+  foreach (content_fields() as $field) {
+    if ($field['type'] == 'imceimage' && $form_state['values']["import-{$field['field_name']}"]) {
+      $field_widgets[$field['field_name']] = $form_state['values']["widget-{$field['field_name']}"];
+      foreach (content_types() as $type) {
+        if ($f = content_fields($field['field_name'], $type['type'])) {
+          $sources[$f['field_name']][] = $f['type_name'];
+        }
+      }
+    }
+  }
+  
+  if (count($sources)) {
+    $operations = array(
+      array('imceimage_2_filefield_batch_start', array()),
+    );
+    foreach ($sources as $field_name => $type_names) {
+      $operations[] = array('imceimage_2_filefield_batch_save', array($field_name, $type_names));
+      $operations[] = array('imceimage_2_filefield_batch_delete', array($n_fields, $field_name, $type_names));
+      $operations[] = array('imceimage_2_filefield_batch_create', array($field_name, $field_type, $field_widgets[$field_name], $type_names, $path, $path_fieldname));
+      $operations[] = array('imceimage_2_filefield_batch_migrate', array($n_nodes, $field_name, $type_names, $path, $path_fieldname));
+    }
+    $batch = array(
+      'title' => t('Migrate'),
+      'operations' => $operations,
+      'finished' => 'imceimage_2_filefield_finish',
+      'init_message' => t('Batch is starting.'),
+      'progress_message' => t('Processing...'),
+      'error_message' => t('Batch has encountered an error.'),
+    );
+    batch_set($batch);
+  } else {
+    form_set_error('', 'Nothing to do.');
+  }
+}
+
+/**
+ * $context is not persistant across batch operations, so save such data in variables table
+ */
+function imceimage_2_filefield_batch_start(&$context) {
+  $batch = array(
+    'halt' => false, // set to true to skip following operations
+    'start' => time(),
+  );
+  variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
+}
+
+/**
+ * save imceimage source field data
+ */
+function imceimage_2_filefield_batch_save($field_name, $type_names, &$context) {
+  $batch = variable_get("imceimage_2_filefield_batch_{$_GET['id']}", false);
+  if (empty($batch) || $batch['halt']) return;
+  
+  // move data to imceimage_2_filefield table
+  $field = content_fields($field_name);
+  $query = 
+     "INSERT INTO 
+        {imceimage_2_filefield} (vid, nid, field_name, imceimage_path, imceimage_width, imceimage_height, imceimage_alt, delta) 
+      SELECT 
+        vid, nid, '{$field_name}', 
+        {$field_name}_imceimage_path, {$field_name}_imceimage_width, {$field_name}_imceimage_height, {$field_name}_imceimage_alt
+    ";
+  $query .= $field['multiple'] ? ', delta' : ', 0';
+  if ($field['db_storage']) {
+    $query .= "
+        FROM {content_type_{$type_names[0]}}
+      ";
+  } else {
+    $query .= "
+        FROM {content_{$field_name}}
+      ";
+  }
+  if (!db_query($query)) {
+    $context['results'][] = $context['error_message'] = t('error saving @field_name data to imceimage_2_filefield table.', array('@field_name' => $field_name));
+    $batch['halt'] = $context['finished'] = 1;
+    variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
+    return;
+  }
+  
+  $context['finished'] = 1;
+
+  $context['results'][] = $context['message'] = t('Saved @field_name data.', array('@field_name' => $field_name));
+}
+
+/**
+ * delete source field, delete all instances so we can create a new filefield with same name
+ */
+function imceimage_2_filefield_batch_delete($n, $field_name, $type_names, &$context) {
+  $batch = variable_get("imceimage_2_filefield_batch_{$_GET['id']}", false);
+  if (empty($batch) || $batch['halt']) return;
+  
+  if (!isset($context['sandbox']['i'])) $context['sandbox']['i'] = 0;
+  $i = $context['sandbox']['i'];
+  $N = count($type_names);
+  
+  module_load_include('inc', 'content', 'includes/content.crud');
+  $types_deleted = array();
+  $max = $i + $n; if ($max > $N) $max = $N;
+  while ($i < $max) {
+    $type_name = $type_names[$i];
+    // save metadata to use when creating filefield 
+    $field = content_fields($field_name, $type_name);
+    $field['widget']['parent'] = _fieldgroup_field_get_group($type_name, $field_name);
+    $batch['fields'][$field_name][$type_name] = $field;
+    if (!content_field_instance_delete($field_name, $type_name)) {
+      $context['results'][] = $context['error_message'] = t('error deleting @type_name @field_name.', array('@type_name' => $type_name, '@field_name' => $field_name));
+      $batch['halt'] = $context['finished'] = 1;
+      variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
+      return;
+    }
+    $i++;
+    $types_deleted[] = $type_name;
+  }
+  variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
+
+  $context['finished'] = $i / $N;
+  if ($context['sandbox']['i'] == $i || $context['finished'] > 1) $context['finished'] = 1;
+  $context['sandbox']['i'] = $i;
+  
+  $context['results'][] = $context['message'] = t('Deleted @field_name from content types:  @types.', array('@types' => implode(', ', $types_deleted), '@field_name' => $field_name));
+}
+
+/**
+ * creates the destination filefield
+ */
+function imceimage_2_filefield_batch_create($field_name, $field_type, $field_widget, $type_names, $path, $path_fieldname, &$context) {
+  $batch = variable_get("imceimage_2_filefield_batch_{$_GET['id']}", false);
+  if (empty($batch) || $batch['halt']) return;
+  
+  module_load_include('inc', 'content', 'includes/content.crud');
+  
+  foreach ($type_names as $type_name) {
+    
+    $field = $batch['fields'][$field_name][$type_name];
+    unset($batch['fields'][$field_name][$type_name]);
+
+    $field['type'] = $field_type; 
+    $field['module'] = $field_type;
+    $field['widget']['type'] = $field_widget;
+    $field['widget']['module'] = $field_type;
+    
+    // migrate field settings
+    // file_path - no leading or trailing /
+    $field['widget']['file_path'] = $path_fieldname ? substr($path, 1) . $field_name : substr($path, 1, strlen($path)-1);
+    $field['widget']['file_extensions'] = $field['imceimage_file_types'];
+    $field['widget']['custom_alt'] = 1;
+
+    if (!$field = content_field_instance_create($field, FALSE)) { 
+      $context['results'][] = $context['error_message'] = t('error creating field @field_name.', array('@field_name' => $field_name));
+      $batch['halt'] = $context['finished'] = 1;
+      variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
+      return;
+    }
+    
+    // fieldgroup is not part of field instance edit page, so 
+    fieldgroup_update_fields(array(
+      'type_name' => $type_name, 
+      'field_name' => $field_name,
+      'group' => $field['widget']['parent'],
+    ));
+  }
+
+  // @see content_field_instance_create()
+  // Clear caches and rebuild menu.
+  content_clear_type_cache(TRUE);
+  menu_rebuild();
+
+  variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
+}
+
+/**
+ * migrates saved data to new filefield  
+ */
+function imceimage_2_filefield_batch_migrate($n, $field_name, $type_names, $path, $path_fieldname, &$context) {
+  $batch = variable_get("imceimage_2_filefield_batch_{$_GET['id']}", false);
+  if (empty($batch) || $batch['halt']) return;
+  
+  if (!isset($context['sandbox']['i'])) $context['sandbox']['i'] = 0;
+  $i = $context['sandbox']['i'];
+  if (!isset($context['sandbox']['N'])) {
+    $N = db_result(db_query("SELECT COUNT(*) FROM {node} WHERE type IN ('" . implode("', '", $type_names) . "')"));
+    if (!$N) return;
+    $context['sandbox']['N'] = $N;
+  }
+  $N = $context['sandbox']['N'];
+  
+  $result = db_query_range("SELECT nid FROM {node} WHERE type IN ('" . implode("', '", $type_names) . "') ORDER BY nid", array(), $i, $n);
+  while ($r = db_fetch_object($result)) {
+   
+    $vids = imceimage_2_filefield_get_revisions($r->nid, $field_name);
+    foreach ($vids as $vid) {
+      $node = node_load($r->nid, $vid);
+
+      foreach (imceimage_2_filefield_get_items($r->nid, $vid, $field_name) as $item) {
+      
+        // @see http://drupal.org/node/330421
+        // @see http://drupal.org/node/201594
+
+        // the source imceimage
+        $src = urldecode($item['imceimage_path']);
+        if (empty($src)) continue;
+        // imceimage stores initial '/'
+        $src = substr($src, 1);
+        
+        // the destination 
+        $dest = file_directory_path() . $path;
+        if ($path_fieldname) {
+          $dest .= $field_name;
+          if (!file_check_directory($dest, true)) {
+            $context['results'][] = $context['error_message'] = t('error checking directory @file_path.', array('@file_path' => $dest));
+            $batch['halt'] = $context['finished'] = 1;
+            variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
+            return;
+          }
+        }
+        $dest .=  '/' . basename($src);
+        
+        if (!$file = imceimage_2_filefield_get_file($src, $dest, $node->uid)) {
+           $context['results'][] = t('error importing file @src to @dest.', array('@src' => $src, '@dest' => $dest));
+        } else {
+          // create filefield field
+          $node->{$field_name}[$item['delta']] = array(
+            'fid' => $file->fid,
+            'title' => basename($file->filename),
+            'filename' => $file->filename,
+            'filepath' => $file->filepath,
+            'filesize' => $file->filesize,
+            'mimetype' => $file->filemime,
+            'description' => basename($file->filename),
+            'data' => array(
+              'alt' => $item['imceimage_alt'],
+              'title' => '',
+            ),
+            'list' => 1,
+          );
+        }
+      }
+
+      node_save($node);
+    }
+    $i++;
+  }
+  
+  $context['finished'] = $i / $N;
+  if ($context['sandbox']['i'] == $i || $context['finished'] > 1) $context['finished'] = 1;
+  $context['sandbox']['i'] = $i;
+  
+  $context['results'][] = $context['message'] = t('Migrating field @field_name.', array('@field_name' => $field_name));
+}
+
+/**
+ * batch finish callback
+ */
+function imceimage_2_filefield_finish($success, $results, $operations) {
+  $batch = variable_get("imceimage_2_filefield_batch_{$_GET['id']}", false);
+  variable_del("imceimage_2_filefield_batch_{$_GET['id']}");
+  $halt = $batch['halt'];
+  $time = time() - $batch['start']; 
+  $success = $success && !$halt;
+  
+//   db_drop_field($ret, 'users', 'imceimage_2_filefield');
+  if ($success) {
+    $message = t('Finished successfully.');
+  }
+  else {
+    $message = $halt ? t('Migration incomplete.') : t('Finished with an error.');
+  }
+  drupal_set_message($message . ' (' . $time . 's)');
+  // // Providing data for the redirected page is done through $_SESSION.
+  // foreach ($results as $result) {
+  //   $items[] = t('Loaded node %title.', array('%title' => $result));
+  // }
+  // $_SESSION['my_batch_results'] = $items;
+}
+
+/* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+// utils
+
+/**
+ * gets all revision id's for a node for which imceimage data needs to be migrated.
+ * @param integer $nid
+ * @param string $field_name
+ */
+function imceimage_2_filefield_get_revisions($nid, $field_name) {
+  $query = "SELECT DISTINCT vid FROM {imceimage_2_filefield} WHERE nid = %d AND field_name = '%s'";
+  $param = array($nid, $field_name);
+  $result = db_query($query, $param);
+  $vids = array();
+  while ($r = db_fetch_object($result)) $vids[] = $r->vid;
+  return $vids;
+}
+
+/**
+ * gets all imceimage instances of a field for a specific revision, marks as migrated.
+ */
+function imceimage_2_filefield_get_items($nid, $vid, $field_name) {
+  $query = "SELECT * FROM {imceimage_2_filefield} WHERE nid = %d AND vid = %d AND field_name = '%s' AND status = 0";
+  $param = array($nid, $vid, $field_name);
+  $result = db_query_range($query, $param, 0, 1);
+  $items = array();
+  while ($r = db_fetch_array($result)) {
+    $r['status'] = 1;
+    drupal_write_record('imceimage_2_filefield', $r, array('nid', 'vid', 'delta', 'field_name'));
+    $items[] = $r;
+  }
+  return $items;
+}
+
+/**
+ * migrates a file to a drupal file. Paths are relative to drupal install.
+ * @see field_file_save_file() may want to use this instead
+ */
+function imceimage_2_filefield_get_file($src, $dest, $uid) {
+  // already copied?
+  $result = db_query("SELECT f.* FROM {imceimage_2_filefield_files} i INNER JOIN {files} f ON i.fid = f.fid WHERE i.path = '%s'", array($src));
+  if ($r = db_fetch_array($result)) return $r;
+  // copy file
+  $file_temp = file_get_contents($src);
+  if (!$file_temp = file_save_data($file_temp, $dest, FILE_EXISTS_RENAME)) 
+    return false;
+  // save as drupal file, create fid
+  $file = new stdClass();
+  $file->filename = basename($file_temp);
+  $file->filepath = $file_temp;
+  $file->filemime = file_get_mimetype(basename($file_temp));
+  $file->filesize = filesize($file_temp);
+  $file->uid = $uid;
+  $file->status = FILE_STATUS_PERMANENT;
+  $file->timestamp = time();
+  drupal_write_record('files', $file);
+  if (!empty($file->fid)) {
+    $r = array('fid' => $file->fid, 'path' => $src);
+    drupal_write_record('imceimage_2_filefield_files', $r);
+    return $file;
+  }
+  return false;
+}
+
