@@ -88,7 +88,7 @@ function imceimage_2_filefield() {
     '#collapsed' => false,
   );
   
-  $form['path']['destination'] = array(
+  $form['path']['dest'] = array(
     '#type' => 'textfield',
     '#title' => t('Path'),
     '#description' => t('Drupal files sub-directory to use as the destination for copied files.'),
@@ -170,18 +170,18 @@ function imceimage_2_filefield_validate($form = null, &$form_state = null) {
     form_set_error('n_fields', t('Fields per batch must be greater than 0.'));
   if ($form_state['values']['n_nodes'] < 1) 
     form_set_error('n_nodes', t('Fields per batch must be greater than 0.'));
-  $path = $form_state['values']['destination'];
+  $path = $form_state['values']['dest'];
   $path = preg_replace(array('/^\/*/', '/\/*$/'), array('/', '/'), $path);
   $path = file_directory_path() . $path;
   if (!file_check_directory($path, 1, 'path'))
-    form_set_error('destination', t('@path could not be written to.', array('@path' => $path)));
+    form_set_error('dest', t('@path could not be written to.', array('@path' => $path)));
 }
 
 function imceimage_2_filefield_submit($form = null, &$form_state = null) {
 
   $n_fields = (int) $form_state['values']['n_fields'];
   $n_nodes = (int) $form_state['values']['n_nodes'];
-  $path = $form_state['values']['destination'];
+  $path = $form_state['values']['dest'];
   $path = preg_replace(array('/^\/*/', '/\/*$/'), array('/', '/'), $path);
   $path_fieldname = !empty($form_state['values']['path_fieldname']);
   
