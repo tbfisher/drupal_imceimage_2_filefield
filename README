@@ -1,4 +1,4 @@
-Migrates imceimage cck fields to filefield cck fields. All referenced files will be copied to the drupal files directory, in the subdirectory specified below.
+Migrates imceimage cck fields to filefield cck fields. All referenced files will be copied to the drupal files directory, in a specified subdirectory.
 
 You should prevent any content editing while this process is running.
 
