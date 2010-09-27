@@ -4,7 +4,8 @@ description = Migrates imceimage cck fields to filefield cck fields.
 
 core = 6.x
 
-dependencies[] = filefield imceimage
+dependencies[] = filefield
+dependencies[] = imceimage
 
 package = content
 
