@@ -1,6 +1,9 @@
 <?php
 // $Id$
 
+// if true, will re-load node and compare updated fields, writing to watchdog any diff's found
+define('IMCEIMAGE_2_FILEFIELD_DIFF', false);
+
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 // hooks
 
@@ -60,6 +63,11 @@ function imceimage_2_filefield_menu() {
 function imceimage_2_filefield() {
   $form = array();
   
+  if (!empty($_SESSION['my_batch_results'])) {
+    foreach ($_SESSION['my_batch_results'] as $result) drupal_set_message($result);
+    unset($_SESSION['my_batch_results']);
+  }
+
   $fields = array();
   foreach (content_fields() as $field) {
     if ($field['type'] == 'imceimage') $fields[] = $field;
@@ -264,15 +272,11 @@ function imceimage_2_filefield_batch_save($field_name, $type_names, &$context) {
       ";
   }
   if (!db_query($query)) {
-    $context['results'][] = $context['error_message'] = t('error saving @field_name data to imceimage_2_filefield table.', array('@field_name' => $field_name));
-    $batch['halt'] = $context['finished'] = 1;
-    variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
+    $context['results'][] = imceimage_2_filefield_error('error saving @field_name data to imceimage_2_filefield table.', array('@field_name' => $field_name), true);
     return;
   }
   
   $context['finished'] = 1;
-
-  $context['results'][] = $context['message'] = t('Saved @field_name data.', array('@field_name' => $field_name));
 }
 
 /**
@@ -296,9 +300,7 @@ function imceimage_2_filefield_batch_delete($n, $field_name, $type_names, &$cont
     $field['widget']['parent'] = _fieldgroup_field_get_group($type_name, $field_name);
     $batch['fields'][$field_name][$type_name] = $field;
     if (!content_field_instance_delete($field_name, $type_name)) {
-      $context['results'][] = $context['error_message'] = t('error deleting @type_name @field_name.', array('@type_name' => $type_name, '@field_name' => $field_name));
-      $batch['halt'] = $context['finished'] = 1;
-      variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
+      $context['results'][] = imceimage_2_filefield_error('error deleting @type_name @field_name.', array('@type_name' => $type_name, '@field_name' => $field_name), true);
       return;
     }
     $i++;
@@ -310,7 +312,7 @@ function imceimage_2_filefield_batch_delete($n, $field_name, $type_names, &$cont
   if ($context['sandbox']['i'] == $i || $context['finished'] > 1) $context['finished'] = 1;
   $context['sandbox']['i'] = $i;
   
-  $context['results'][] = $context['message'] = t('Deleted @field_name from content types:  @types.', array('@types' => implode(', ', $types_deleted), '@field_name' => $field_name));
+  $context['message'] = t('Deleted @field_name from content types:  @types.', array('@types' => implode(', ', $types_deleted), '@field_name' => $field_name));
 }
 
 /**
@@ -338,10 +340,8 @@ function imceimage_2_filefield_batch_create($field_name, $field_type, $field_wid
     $field['widget']['file_extensions'] = $field['imceimage_file_types'];
     $field['widget']['custom_alt'] = 1;
 
-    if (!$field = content_field_instance_create($field, FALSE)) { 
-      $context['results'][] = $context['error_message'] = t('error creating field @field_name.', array('@field_name' => $field_name));
-      $batch['halt'] = $context['finished'] = 1;
-      variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
+    if (!$field = content_field_instance_create($field, FALSE)) {
+      $context['results'][] = imceimage_2_filefield_error('error creating field @field_name.', array('@field_name' => $field_name), true);
       return;
     }
     
@@ -353,13 +353,14 @@ function imceimage_2_filefield_batch_create($field_name, $field_type, $field_wid
     ));
   }
 
+  variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
+
   // @see content_field_instance_create()
   // Clear caches and rebuild menu.
   content_clear_type_cache(TRUE);
   menu_rebuild();
 
-  variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
-  $context['results'][] = $context['message'] = t('Created @field_name, added to content types: @types.', array('@types' => implode(', ', $type_names), '@field_name' => $field_name));
+  $context['message'] = t('Created @field_name, added to content types: @types.', array('@types' => implode(', ', $type_names), '@field_name' => $field_name));
 }
 
 /**
@@ -406,16 +407,14 @@ function imceimage_2_filefield_batch_migrate($n, $sources, $path, $path_fieldnam
             if ($path_fieldname) {
               $dest .= $field_name;
               if (!file_check_directory($dest, true)) {
-                $context['results'][] = $context['error_message'] = t('error checking directory @file_path.', array('@file_path' => $dest));
-                $batch['halt'] = $context['finished'] = 1;
-                variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
+                $context['results'][] = imceimage_2_filefield_error('error checking directory @file_path.', array('@file_path' => $dest), true);
                 return;
               }
             }
             $dest .=  '/' . basename($src);
             
             if (!$file = imceimage_2_filefield_get_file($src, $dest, $node->uid)) {
-               $context['results'][] = t('error importing file @src to @dest.', array('@src' => $src, '@dest' => $dest));
+              $context['results'][] = imceimage_2_filefield_error('error importing file @src to @dest.', array('@src' => $src, '@dest' => $dest), false);
             } else {
               // create filefield field
               $node->{$field_name}[$item['delta']] = array(
@@ -431,12 +430,28 @@ function imceimage_2_filefield_batch_migrate($n, $sources, $path, $path_fieldnam
                   'title' => '',
                 ),
                 'list' => 1,
+                'status' => 1,
               );
             }
           }
         }
       }
+
+      if (IMCEIMAGE_2_FILEFIELD_DIFF) $node_presave = clone $node;
       node_save($node);
+      if (IMCEIMAGE_2_FILEFIELD_DIFF) {
+        $node = node_load($r->nid, $vid, true);
+        foreach ($sources as $field_name => $type_names) {
+          if (in_array($node->type, $type_names) && is_array($node_presave->{$field_name})) {
+            if (!is_array($node->{$field_name})) {
+              $context['results'][] = imceimage_2_filefield_error('error saving field @field_name to node @nid.', array('@field_name' => $field_name, '@nid' => $r->nid), false);
+            }
+            if (false !== $diff = imceimage_2_filefield_diff($node->{$field_name}, $node_presave->{$field_name})) {
+              watchdog('imceimage_2_filefield', 'error saving field @field_name to node @nid: !diff.', array('@field_name' => $field_name, '@nid' => $r->nid, '@diff' => print_r($diff, true)), WATCHDOG_NOTICE);
+            }
+          }
+        }
+      }
     }
     $i++;
   }
@@ -444,8 +459,8 @@ function imceimage_2_filefield_batch_migrate($n, $sources, $path, $path_fieldnam
   $context['finished'] = $i / $N;
   if ($context['sandbox']['i'] == $i || $context['finished'] > 1) $context['finished'] = 1;
   $context['sandbox']['i'] = $i;
-  
-  $context['results'][] = $context['message'] = t('Migrating data, finished @i out of @N.', array('@i' => $i, '@N' => $N));
+
+  $context['message'] = t('Migrating data, finished @i out of @N.', array('@i' => $i, '@N' => $N));
 }
 
 /**
@@ -455,10 +470,9 @@ function imceimage_2_filefield_finish($success, $results, $operations) {
   $batch = variable_get("imceimage_2_filefield_batch_{$_GET['id']}", false);
   variable_del("imceimage_2_filefield_batch_{$_GET['id']}");
   $halt = $batch['halt'];
-  $time = time() - $batch['start']; 
+  $time = time() - $batch['start'];
+
   $success = $success && !$halt;
-  
-//   db_drop_field($ret, 'users', 'imceimage_2_filefield');
   if ($success) {
     $message = t('Finished successfully.');
   }
@@ -466,11 +480,9 @@ function imceimage_2_filefield_finish($success, $results, $operations) {
     $message = $halt ? t('Migration incomplete.') : t('Finished with an error.');
   }
   drupal_set_message($message . ' (' . $time . 's)');
-  // // Providing data for the redirected page is done through $_SESSION.
-  // foreach ($results as $result) {
-  //   $items[] = t('Loaded node %title.', array('%title' => $result));
-  // }
-  // $_SESSION['my_batch_results'] = $items;
+
+  // Providing data for the redirected page is done through $_SESSION.
+  $_SESSION['my_batch_results'] = $results;
 }
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
@@ -513,7 +525,7 @@ function imceimage_2_filefield_get_items($nid, $vid, $field_name) {
 function imceimage_2_filefield_get_file($src, $dest, $uid) {
   // already copied?
   $result = db_query("SELECT f.* FROM {imceimage_2_filefield_files} i INNER JOIN {files} f ON i.fid = f.fid WHERE i.path = '%s'", array($src));
-  if ($r = db_fetch_array($result)) return $r;
+  if ($r = db_fetch_object($result)) return $r;
   // copy file
   $file_temp = file_get_contents($src);
   if (!$file_temp = file_save_data($file_temp, $dest, FILE_EXISTS_RENAME)) 
@@ -534,5 +546,53 @@ function imceimage_2_filefield_get_file($src, $dest, $uid) {
     return $file;
   }
   return false;
+}
+
+/**
+ * logs the error and returns the translated message, optionally sets the batch halt flag
+ */
+function imceimage_2_filefield_error($msg, $var, $halt) {
+  $batch = variable_get("imceimage_2_filefield_batch_{$_GET['id']}", false);
+  watchdog('imceimage_2_filefield', $msg, $var, WATCHDOG_ERROR);
+  $batch['halt'] = $halt;
+  variable_set("imceimage_2_filefield_batch_{$_GET['id']}", $batch);
+  return t($msg, $var);
+}
+
+/**
+ * compares node cck field arrays 
+ * @see http://us.php.net/manual/en/function.array-diff-assoc.php#89635
+ */
+function imceimage_2_filefield_diff($a, $b) {
+  $diff = false;
+  // Left-to-right
+  foreach ($a as $key => $value) {
+    if (!array_key_exists($key,$b)) {
+      $diff[0][$key] = $value;
+    } elseif (is_array($value)) {
+      if (!is_array($b[$key])) {
+        $diff[0][$key] = $value;
+        $diff[1][$key] = $b[$key];
+      } else {
+        $new = imceimage_2_filefield_diff($value, $b[$key]);
+        if ($new !== false) {
+          if (isset($new[0])) $diff[0][$key] = $new[0];
+          if (isset($new[1])) $diff[1][$key] = $new[1];
+        };
+      };
+    } elseif ($b[$key] !== $value) {
+      $diff[0][$key] = $value;
+      $diff[1][$key] = $b[$key];
+    };
+  };
+  // Right-to-left
+  foreach ($b as $key => $value) {
+    if (!array_key_exists($key,$a)) {
+      $diff[1][$key] = $value;
+    };
+    // No direct comparsion because matching keys were compared in the
+    // left-to-right loop earlier, recursively.
+  };
+  return $diff;
 }
 
