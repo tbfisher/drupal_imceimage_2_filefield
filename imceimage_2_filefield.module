@@ -177,7 +177,7 @@ function imceimage_2_filefield_validate($form = null, &$form_state = null) {
   if ($form_state['values']['n_fields'] < 1) 
     form_set_error('n_fields', t('Fields per batch must be greater than 0.'));
   if ($form_state['values']['n_nodes'] < 1) 
-    form_set_error('n_nodes', t('Fields per batch must be greater than 0.'));
+    form_set_error('n_nodes', t('Nodes per batch must be greater than 0.'));
     
   $path = $form_state['values']['dest'];
   $path = preg_replace(array('/^\/*/', '/\/*$/'), array('/', '/'), $path);
