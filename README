@@ -1,3 +1,5 @@
+http://github.com/tbfisher/drupal_imceimage_2_filefield
+
 Migrates imceimage cck fields to filefield cck fields. All referenced files will be copied to the drupal files directory, in a specified subdirectory.
 
 You should prevent any content editing while this process is running.
