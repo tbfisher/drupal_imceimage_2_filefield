@@ -7,5 +7,5 @@ core = 6.x
 dependencies[] = filefield
 dependencies[] = imceimage
 
-package = cck
+package = CCK
 
