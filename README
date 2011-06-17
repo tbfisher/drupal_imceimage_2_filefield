@@ -1,13 +1,3 @@
 http://github.com/tbfisher/drupal_imceimage_2_filefield
 
-Migrates imceimage cck fields to filefield cck fields. All referenced files will be copied to the drupal files directory, in a specified subdirectory.
-
-You should prevent any content editing while this process is running.
-
-You should NOT trust this module will migrate your data perfectly. If it fails you must restore your site from a backup. Test on a copy! Make backups!
-
-Usage:
-
-1. Install module in the normal way.
-2. Grant "administer imceimage_2_filefield" permissions - /admin/user/permissions
-3. Configure and run - admin/settings/imceimage_2_filefield
+moved to http://drupal.org/sandbox/tbfisher/1078110
